@@ -14,77 +14,121 @@
  * limitations under the License.
  */
 
-#include "ntp-client/NTPClient.h"
+#include "NTPClient.h"
 #include "mbed.h"
 
-NTPClient::NTPClient(NetworkInterface *interface)
-    : iface(interface), nist_server_address(NTP_DEFULT_NIST_SERVER_ADDRESS), nist_server_port(NTP_DEFULT_NIST_SERVER_PORT) {
+bool NTPClient::resolveDNS(const SntpServerInfo_t *pServerAddr, uint32_t *pIpV4Addr) {
+    SocketAddress result;
+
+    if(instance().interface->gethostbyname(pServerAddr->pServerName, &result, NSAPI_IPv4) != NSAPI_ERROR_OK) {
+        return false;
+    }
+
+    memcpy(pIpV4Addr, result.get_ip_bytes(), sizeof(uint32_t));
+    return true;
 }
 
-void NTPClient::set_server(const char* server, int port) {
-    nist_server_address = server;
-    nist_server_port = port;
+void NTPClient::getRTCTime(SntpTimestamp_t *pCurrentTime) {
+
+    // Set seconds based on real-time clock. We need to convert from NTP epoch (Jan 1 1900) to
+    // UNIX time (epoch = Jan 1 1970)
+    uint32_t secsSince1970 = std::chrono::duration_cast<std::chrono::seconds>(RealTimeClock::now().time_since_epoch()).count();
+    pCurrentTime->seconds = secsSince1970 + SNTP_TIME_AT_UNIX_EPOCH_SECS;
+
+    // Unfortunately the Mbed RTC does not currently implement sub-second timing, so we have to leave the fractional part as 0.
+    pCurrentTime->fractions = 0;
 }
 
-time_t NTPClient::get_timestamp(int timeout) {
-    const time_t TIME1970 = (time_t)2208988800UL;
-    int ntp_send_values[12] = {0};
-    int ntp_recv_values[12] = {0};
+void NTPClient::saveTimeOffset(const SntpServerInfo_t *pTimeServer, const SntpTimestamp_t *pServerTime,
+    int64_t clockOffsetMs, SntpLeapSecondInfo_t leapSecondInfo) {
+    // Currently we don't use the time server addr or leap second info.
+    (void)pTimeServer;
+    (void)leapSecondInfo;
 
-    SocketAddress nist;
+    // Also, the offset will generally provide a more accurate sync, and we aren't too worried about
+    // running out of bits in a millisecond type, so we can throw out the server time
+    (void)pServerTime;
 
-    if (iface) {
-        int ret_gethostbyname = iface->gethostbyname(nist_server_address, &nist);
+    instance().last_time_offset.offset = std::chrono::milliseconds(clockOffsetMs);
+}
 
-        if (ret_gethostbyname < 0) {
-            // Network error on DNS lookup
-            return ret_gethostbyname;
-        }
+int32_t NTPClient::udpSendto(NetworkContext_t *pNetworkContext, uint32_t serverAddr, uint16_t serverPort,
+    const void *pBuffer, uint16_t bytesToSend) {
+    (void)pNetworkContext;
 
-        nist.set_port(nist_server_port);
+    SocketAddress destAddr(&serverAddr, NSAPI_IPv4, serverPort);
 
-        memset(ntp_send_values, 0x00, sizeof(ntp_send_values));
-        ntp_send_values[0] = '\x1b';
+    const auto ret = instance().socket.sendto(destAddr, pBuffer, bytesToSend);
+    if(ret > 0) {
+        // Connect the socket to this server so that we will receive a reply from it only and not other random
+        // packets to this port
+        instance().socket.connect(destAddr);
 
-        memset(ntp_recv_values, 0x00, sizeof(ntp_recv_values));
-
-        UDPSocket sock;
-        sock.open(iface);
-        sock.set_timeout(timeout);
-
-        sock.sendto(nist, (void*)ntp_send_values, sizeof(ntp_send_values));
-
-        SocketAddress source;
-        const int n = sock.recvfrom(&source, (void*)ntp_recv_values, sizeof(ntp_recv_values));
-
-        if (n > 10) {
-            return ntohl(ntp_recv_values[10]) - TIME1970;
-
-        } else {
-            if (n < 0) {
-                // Network error
-                return n;
-
-            } else {
-                // No or partial data returned
-                return -1;
-            }
-        }
-
-    } else {
-        // No network interface
-        return -2;
+        return ret; // Ret is number of bytes transmitted
+    }
+    else if(ret == NSAPI_ERROR_WOULD_BLOCK) {
+        return 0; // 0 indicates to coreSNTP that we couldn't send without blocking
+    }
+    else {
+        // Other negative error code
+        return ret;
     }
 }
 
-void NTPClient::network(NetworkInterface *interface) {
-    iface = interface;
+int32_t NTPClient::udpRecvfrom(NetworkContext_t *pNetworkContext, uint32_t serverAddr, uint16_t serverPort,
+    void *pBuffer, uint16_t bytesToRecv) {
+    (void)pNetworkContext;
+
+    // We already connected the socket in udpSendto, so we don't need to do that here
+    (void)serverAddr;
+    (void)serverPort;
+
+    const auto ret = instance().socket.recv(pBuffer, bytesToRecv);
+
+    if(ret > 0) {
+        // Return number of bytes received
+        return ret;
+    }
+    else if(ret == NSAPI_ERROR_WOULD_BLOCK) {
+        // Return 0 to indicate no data avail
+        return 0;
+    }
+    else {
+        // Negative error code
+        return ret;
+    }
 }
 
-uint32_t NTPClient::ntohl(uint32_t x) {
-    uint32_t ret = (x & 0xff) << 24;
-    ret |= (x & 0xff00) << 8;
-    ret |= (x & 0xff0000UL) >> 8;
-    ret |= (x & 0xff000000UL) >> 24;
-    return ret;
+NTPClient & NTPClient::instance() {
+    static NTPClient instance;
+    return instance;
+}
+
+SntpStatus_t NTPClient::init(NetworkInterface *interface, char const * const *ntp_servers, size_t num_ntp_servers) {
+
+    if(interface == nullptr || ntp_servers == nullptr || num_ntp_servers == 0) {
+        return SntpErrorBadParameter;
+    }
+
+    // Save data into class vars
+    this->interface = interface;
+    delete[] time_servers; // Delete if already allocated
+    time_servers = new SntpServerInfo_t[num_ntp_servers];
+    for(size_t time_server_idx = 0; time_server_idx < num_ntp_servers; time_server_idx++) {
+        time_servers[time_server_idx].pServerName = ntp_servers[time_server_idx];
+        time_servers[time_server_idx].serverNameLen = strlen(ntp_servers[time_server_idx]);
+        time_servers[time_server_idx].port = SNTP_DEFAULT_SERVER_PORT;
+    }
+
+    // Make sure RTC is initialized
+    RealTimeClock::init();
+
+    // Create socket. Binding to any random local port is OK.
+    socket.open(interface);
+    socket.set_blocking(false);
+
+    // Init SNTP
+    const uint32_t response_timeout_ms = 500;
+    return Sntp_Init(&sntp_context, time_servers, num_ntp_servers, response_timeout_ms, ntp_packet_buffer, sizeof(ntp_packet_buffer),
+        &NTPClient::resolveDNS, &NTPClient::getRTCTime, &NTPClient::saveTimeOffset, &udp_interface, nullptr);
 }
