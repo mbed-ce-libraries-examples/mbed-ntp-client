@@ -16,6 +16,7 @@
 
 #include "NTPClient.h"
 #include "mbed.h"
+#include "arm_hal_random.h"
 
 bool NTPClient::resolveDNS(const SntpServerInfo_t *pServerAddr, uint32_t *pIpV4Addr) {
     SocketAddress result;
@@ -131,4 +132,24 @@ SntpStatus_t NTPClient::init(NetworkInterface *interface, char const * const *nt
     const uint32_t response_timeout_ms = 500;
     return Sntp_Init(&sntp_context, time_servers, num_ntp_servers, response_timeout_ms, ntp_packet_buffer, sizeof(ntp_packet_buffer),
         &NTPClient::resolveDNS, &NTPClient::getRTCTime, &NTPClient::saveTimeOffset, &udp_interface, nullptr);
+}
+
+SntpStatus_t NTPClient::requestTime() {
+
+    // Prepare random number
+    if(!randGen.has_value()) {
+        // If we have TRNG support, seed the random number generator using it.
+        // Otherwise, use the most accurate boot time timestamp available, which is... better than nothing as
+        // the time between boot and now often isn't consistent at the microsecond level
+#if defined(DEVICE_TRNG) || defined(FEATURE_PSA)
+        randGen.emplace(arm_random_seed_get());
+#else
+        randGen.emplace(us_ticker_read());
+#endif
+    }
+    const uint32_t randNumber = std::uniform_int_distribution<uint32_t>()(randGen);
+
+    // Note: I'm not aware of any reason why we would not be able to send the packet immediately that isn't
+    // "permanent", e.g. the network being down. So, leaving the last parameter at 0 to disable retries.
+    return Sntp_SendTimeRequest(&sntp_context, randNumber, 0);
 }

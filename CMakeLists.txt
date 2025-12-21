@@ -21,6 +21,7 @@ target_link_libraries(mbed-ntp-client
     PUBLIC
         freertos-coreSNTP
         mbed-netsocket
+        mbed-randlib
 )
 
 # Pull in the config header we provide for coreSNTP

@@ -18,6 +18,9 @@
 
 #include "core_sntp_client.h"
 
+#include <random>
+#include <optional>
+
 /**
  * @brief NTP client for Mbed OS.
  *
@@ -57,7 +60,6 @@ private:
     SntpContext_t sntp_context = {};
     SntpServerInfo_t * time_servers = nullptr;
 
-
     // Buffer for the library to build packets.
     uint8_t ntp_packet_buffer[SNTP_PACKET_BASE_SIZE];
 
@@ -69,6 +71,9 @@ private:
 
     // Most recent time offset obtained from the NTP server
     TimeOffset last_time_offset;
+
+    // Random number generator, created on first use
+    std::optional<std::minstd_rand> randGen;
 
     // Private constructor
     NTPClient() = default;
@@ -116,5 +121,14 @@ public:
     SntpStatus_t init(NetworkInterface *interface,
                       char const * const * ntp_servers = DEFAULT_NTP_SERVERS,
                       size_t num_ntp_servers = sizeof(DEFAULT_NTP_SERVERS) / sizeof(char *));
+
+    /**
+     * @brief Send a packet to the server requesting the time.
+     *
+     * This function only sends the NTP query, it does not process the response or synchronize the time
+     *
+     * @return Error code or \c SntpSuccess
+     */
+    SntpStatus_t requestTime();
 
 };
