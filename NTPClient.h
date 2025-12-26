@@ -108,10 +108,13 @@ public:
 
     static constexpr char const * DEFAULT_NTP_SERVERS[] = {"2.pool.ntp.org"};
 
+    static constexpr std::chrono::milliseconds DEFAULT_TIMEOUT = 1s;
+
     /**
      * @brief Initialize Mbed NTP.
      *
      * @param interface Network interface to communicate over
+     * @param timeout Timeout to wait for a response from the server in receiveTime(). May be 0 to operate in nonblocking mode.
      * @param ntp_servers Array of NTP server addresses, as C strings. Optional, defaults to DEFAULT_NTP_SERVERS.
      *     Strings must remain allocated as long as the class is used.
      * @param num_ntp_servers Number of NTP servers in \c ntp_servers
@@ -119,16 +122,65 @@ public:
      * @return Error code or \c SntpSuccess
      */
     SntpStatus_t init(NetworkInterface *interface,
+                      std::chrono::milliseconds timeout = DEFAULT_TIMEOUT,
                       char const * const * ntp_servers = DEFAULT_NTP_SERVERS,
                       size_t num_ntp_servers = sizeof(DEFAULT_NTP_SERVERS) / sizeof(char *));
 
     /**
      * @brief Send a packet to the server requesting the time.
      *
-     * This function only sends the NTP query, it does not process the response or synchronize the time
+     * The specific NTP server to use is determined by the underlying coreSNTP library. Generally, the first
+     * NTP server passed will be used, unless that server did not respond to or actively rejected a previous
+     * query, in which case the next server down the list will be used.
+     *
+     * This function only sends the NTP query, it does not process the response or synchronize the time.
+     * Call \c receiveTime() at a later date to process the result of the query.
      *
      * @return Error code or \c SntpSuccess
      */
     SntpStatus_t requestTime();
 
+    /**
+     * @brief Receive the result of a previous time query to the NTP server.
+     *
+     * You must previously have called \c requestTime() to initiate an NTP query.
+     *
+     * @note If no response is received (or the server rejects the request), this function does not make a new
+     *     time request, but does rotate to the next time server in the list to use the next time \c requestTime()
+     *     is called.
+     *
+     * @param[out] result If successful, the time offset resulting from the synchronization is saved here.
+     *
+     * @return Error code or \c SntpSuccess
+     * @retval SntpErrorResponseTimeout if no response was received from the NTP server within the configured timeout
+     */
+    SntpStatus_t receiveTime(TimeOffset & result);
+
+    /**
+     * @brief Attempt a blocking sync of the Mbed system time in the RTC.
+     *
+     * @param[out] offset If successful, the time offset resulting from the synchronization is saved here.
+     *    Note that the Mbed RTC only stores whole seconds, so the sub-second portion of this offset will need
+     *    to be added to the RTC time if you want better than second-level accuracy.
+     *
+     * @return SntpSuccess on success, or error code on error
+     * @retval SntpErrorResponseTimeout if no response was received from the NTP server within the configured timeout
+     *
+     * @note Only one NTP request is sent by this function (no retries). However, if no response or an explicit rejection
+     *     is received from the server, this call does rotate to the next time server in the list to use next time.
+     *     So, you may wish to call this function multiple times, especially if you have multiple time servers configured.
+     */
+    SntpStatus_t syncSystemTime(TimeOffset & offset) {
+        auto ret = requestTime();
+        if (ret != SntpSuccess) { return ret; }
+
+        ret = receiveTime(offset);
+
+        if (ret != SntpSuccess) { return ret; }
+
+        // Offset the system time forward by the offset.
+        RealTimeClock::write(RealTimeClock::now() + offset.wholeSeconds());
+
+        return SntpSuccess;
+    }
 };

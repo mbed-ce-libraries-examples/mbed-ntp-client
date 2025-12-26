@@ -91,7 +91,7 @@ int32_t NTPClient::udpRecvfrom(NetworkContext_t *pNetworkContext, uint32_t serve
         return ret;
     }
     else if(ret == NSAPI_ERROR_WOULD_BLOCK) {
-        // Return 0 to indicate no data avail
+        // Return 0 to indicate no data avail within timeout
         return 0;
     }
     else {
@@ -105,7 +105,7 @@ NTPClient & NTPClient::instance() {
     return instance;
 }
 
-SntpStatus_t NTPClient::init(NetworkInterface *interface, char const * const *ntp_servers, size_t num_ntp_servers) {
+SntpStatus_t NTPClient::init(NetworkInterface *interface, std::chrono::milliseconds timeout, char const * const *ntp_servers, size_t num_ntp_servers) {
 
     if(interface == nullptr || ntp_servers == nullptr || num_ntp_servers == 0) {
         return SntpErrorBadParameter;
@@ -125,12 +125,13 @@ SntpStatus_t NTPClient::init(NetworkInterface *interface, char const * const *nt
     RealTimeClock::init();
 
     // Create socket. Binding to any random local port is OK.
+    // Note that the coreSNTP docs say that a nonblocking socket is recommended, but if we use a nonblocking socket,
+    // then Sntp_ReceiveTimeResponse() will spinlock for the entire timeout, which is gross.
     socket.open(interface);
-    socket.set_blocking(false);
+    socket.set_timeout(timeout.count());
 
     // Init SNTP
-    const uint32_t response_timeout_ms = 500;
-    return Sntp_Init(&sntp_context, time_servers, num_ntp_servers, response_timeout_ms, ntp_packet_buffer, sizeof(ntp_packet_buffer),
+    return Sntp_Init(&sntp_context, time_servers, num_ntp_servers, timeout.count(), ntp_packet_buffer, sizeof(ntp_packet_buffer),
         &NTPClient::resolveDNS, &NTPClient::getRTCTime, &NTPClient::saveTimeOffset, &udp_interface, nullptr);
 }
 
@@ -147,9 +148,19 @@ SntpStatus_t NTPClient::requestTime() {
         randGen.emplace(us_ticker_read());
 #endif
     }
-    const uint32_t randNumber = std::uniform_int_distribution<uint32_t>()(randGen);
+    const uint32_t randNumber = std::uniform_int_distribution<uint32_t>()(*randGen);
 
     // Note: I'm not aware of any reason why we would not be able to send the packet immediately that isn't
     // "permanent", e.g. the network being down. So, leaving the last parameter at 0 to disable retries.
     return Sntp_SendTimeRequest(&sntp_context, randNumber, 0);
+}
+
+SntpStatus_t NTPClient::receiveTime(TimeOffset &result) {
+
+    const auto ret = Sntp_ReceiveTimeResponse(&sntp_context, sntp_context.responseTimeoutMs);
+    if(ret == SntpSuccess) {
+        // Time offset was delivered through the callback
+        result = last_time_offset;
+    }
+    return ret;
 }
