@@ -26,33 +26,49 @@
  *
  * This library is a wrapper around FreeRTOS coreSNTP that connects it to the Mbed OS APIs for time and networking.
  *
- * Note: This class is a singleton (because coreSNTP relies on global callbacks, so it's impossible to create
+ * \par NTP and Mbed Timers
+ * Mbed OS has three different timer APIs that are able to be used by the NTP client. The us ticker is supported
+ * on all Mbed devices, and provides a 64-bit microseconds timestamp. The real-time clock (RTC) is only available
+ * on some Mbed devices, and only has seconds precision, but is able to preserve its time across resets
+ * (which other timers cannot). Finally, the low precision (lp) ticker is similar to the us ticker but
+ * uses a slower clock that is more power-efficient but less precise (its resolution is usually in the 10s-100s of
+ * microseconds). Note that all three of these timers may or may not be clocked from the same clock source,
+ * so it's possible for them to drift relative to each other over time on some targets.
+ *
+ * \par
+ * In the base configuration, \c NTPClient produces a UNIX timestamp based on a microsecond ticker (either the us
+ * or lp ticker). This UNIX timestamp gives the number of microseconds that have elapsed since January 1, 1970.
+ * Internally, this is implemented as a fixed offset to the time returned by the microsecond ticker. This
+ * offset is updated each time the time is synchronized.
+ *
+ * \par RTC Usage
+ * If the RTC is available on the current target, each time the time is synchronized, the RTC is set to the seconds
+ * portion of the current UNIX timestamp. Then, on init, the RTC is used to initialize the UNIX time to local
+ * time offset before the first time sync is performed. This means that time can be preserved across resets
+ * (though only with seconds precision, not microseconds!). If a backup battery is used to power the RTC in your
+ * design, then the time can be kept across power losses as well.
+ *
+ * \par LP Ticker vs US Ticker
+ * By default, if the lp ticker is supported on your target, it will be used. This is because while the lp
+ * ticker has lower precision, it still operates in deep sleep mode. The us ticker does not run in deep sleep
+ * mode, so the NTP client has to lock the deep sleep so that we don't lose track of the time.
+ * If you prefer higher precision at the cost of not being able to deep sleep, you may set the
+ * \c `ntp-client.prefer-lp-ticker` option to false in mbed_app.json5 to disable this behavior.
+ * Also note that the underlying coreSNTP uses milliseconds, not microseconds, so the accuracy
+ * of the NTP time can never be better than 1ms regardless of the underlying clock.
+ *
+ * @note This class is a singleton (because coreSNTP relies on global callbacks, so it's impossible to create
  * multiple instances) but still needs to be initialized before use by calling \c init().
  */
 class NTPClient {
 
 public:
-    /**
-     * @brief Structure representing a time offset obtained by NTP.
-     *
-     * This structure describes how the system time relates to the NTP time, in the form
-     * system_time + offset = ntp_time. So if the offset is 1 second and 1 millisecond, then we are
-     * 1.001 seconds behind the NTP server time.
-     */
-    struct TimeOffset {
-        /// Total time offset in milliseconds
-        std::chrono::milliseconds offset;
-
-        /// Get the sub-second part of the offset
-        std::chrono::milliseconds subsecondPart() {
-            return offset % std::chrono::seconds(1);
-        }
-
-        /// Get the whole seconds part of the offset
-        std::chrono::seconds wholeSeconds() {
-            return std::chrono::floor<std::chrono::seconds>(offset);
-        }
-    };
+    // Typedefs/definitions to make NTPClient an std::chrono clock
+    using duration = TickerDataClock::duration;
+    using rep = duration::rep;
+    using period = duration::period;
+    using time_point = TickerDataClock::time_point;
+    static const bool is_steady = false;
 
 private:
 
@@ -69,20 +85,26 @@ private:
     // Socket
     UDPSocket socket;
 
-    // Most recent time offset obtained from the NTP server
-    TimeOffset last_time_offset;
+    // Internal microsecond-precision clock
+    TickerDataClock us_clock;
+
+    // Current best offset between the raw time returned by us_clock and the UNIX timestamp
+    duration time_offset;
+
+    // Most recent correct that we made to time_offset
+    duration most_recent_correction;
 
     // Random number generator, created on first use
     std::optional<std::minstd_rand> randGen;
 
     // Private constructor
-    NTPClient() = default;
+    NTPClient();
 
     // DNS resolve callback. See SntpResolveDns_t for docs.
     static bool resolveDNS(const SntpServerInfo_t * pServerAddr, uint32_t * pIpV4Addr);
 
     // Get time callback. See SntpGetTime_t for docs.
-    static void getRTCTime(SntpTimestamp_t * pCurrentTime);
+    static void getCurrentTime(SntpTimestamp_t * pCurrentTime);
 
     // Time sync performed callback. See SntpSetTime_t for details.
     static void saveTimeOffset(const SntpServerInfo_t * pTimeServer, const SntpTimestamp_t * pServerTime, int64_t clockOffsetMs, SntpLeapSecondInfo_t leapSecondInfo);
@@ -125,6 +147,11 @@ public:
                       std::chrono::milliseconds timeout = DEFAULT_TIMEOUT,
                       char const * const * ntp_servers = DEFAULT_NTP_SERVERS,
                       size_t num_ntp_servers = sizeof(DEFAULT_NTP_SERVERS) / sizeof(char *));
+
+    /**
+     * @return The current time, as a UNIX timestamp (microseconds since 1970).
+     */
+    time_point now() const;
 
     /**
      * @brief Send a packet to the server requesting the time.

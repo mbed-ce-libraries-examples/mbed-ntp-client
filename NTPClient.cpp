@@ -18,6 +18,26 @@
 #include "mbed.h"
 #include "arm_hal_random.h"
 
+// Maximum diff between client and server time for the offset value from coreSNTP to be valid.
+// Comments say that this is either 34 or 68 years (they disagree). For safety using
+// 33 years here, converted to seconds
+static constexpr std::chrono::seconds MAX_DIFF_FOR_TIME_OFFSET(1041000000);
+
+#if MBED_CONF_NTP_CLIENT_PREFER_LP_TICKER && defined(DEVICE_LPTICKER)
+static constexpr bool USING_LP_TICKER = true;
+#else
+static constexpr bool USING_LP_TICKER = false;
+#endif
+
+NTPClient::NTPClient():
+#if MBED_CONF_NTP_CLIENT_PREFER_LP_TICKER && defined(DEVICE_LPTICKER)
+us_clock(get_lp_ticker_data())
+#else
+us_clock(get_us_ticker_data())
+#endif
+{
+}
+
 bool NTPClient::resolveDNS(const SntpServerInfo_t *pServerAddr, uint32_t *pIpV4Addr) {
     SocketAddress result;
 
@@ -29,15 +49,14 @@ bool NTPClient::resolveDNS(const SntpServerInfo_t *pServerAddr, uint32_t *pIpV4A
     return true;
 }
 
-void NTPClient::getRTCTime(SntpTimestamp_t *pCurrentTime) {
-
+void NTPClient::getCurrentTime(SntpTimestamp_t *pCurrentTime) {
     // Set seconds based on real-time clock. We need to convert from NTP epoch (Jan 1 1900) to
     // UNIX time (epoch = Jan 1 1970)
-    uint32_t secsSince1970 = std::chrono::duration_cast<std::chrono::seconds>(RealTimeClock::now().time_since_epoch()).count();
-    pCurrentTime->seconds = secsSince1970 + SNTP_TIME_AT_UNIX_EPOCH_SECS;
-
-    // Unfortunately the Mbed RTC does not currently implement sub-second timing, so we have to leave the fractional part as 0.
-    pCurrentTime->fractions = 0;
+    const auto time_since_1970 = instance().now().time_since_epoch();
+    const auto secs_since_1970 = std::chrono::floor<std::chrono::seconds>(time_since_1970);
+    const auto fractional_seconds = std::chrono::microseconds(time_since_1970 % secs_since_1970);
+    pCurrentTime->seconds = secs_since_1970.count() + SNTP_TIME_AT_UNIX_EPOCH_SECS;
+    pCurrentTime->fractions = fractional_seconds.count() * SNTP_FRACTION_VALUE_PER_MICROSECOND;
 }
 
 void NTPClient::saveTimeOffset(const SntpServerInfo_t *pTimeServer, const SntpTimestamp_t *pServerTime,
@@ -46,11 +65,27 @@ void NTPClient::saveTimeOffset(const SntpServerInfo_t *pTimeServer, const SntpTi
     (void)pTimeServer;
     (void)leapSecondInfo;
 
-    // Also, the offset will generally provide a more accurate sync, and we aren't too worried about
-    // running out of bits in a millisecond type, so we can throw out the server time
-    (void)pServerTime;
+    // Per the coreSNTP docs, if the client and server are more than 68 years apart,
+    // clockOffsetMs is not valid. Check if that is the case and, if so, just set our clock
+    // to the server time to get us in the right ballpark.
+    time_point server_time(std::chrono::seconds(pServerTime->seconds - SNTP_FRACTION_VALUE_PER_MICROSECOND) +
+        std::chrono::microseconds(pServerTime->fractions / SNTP_FRACTION_VALUE_PER_MICROSECOND));
+    if (std::chrono::abs(instance().now() - server_time) > MAX_DIFF_FOR_TIME_OFFSET) {
+        // To "set" the time, subtract away the current value of time_offset and replace it with the
+        // value that would make the time equal server_time
+        instance().most_recent_correction = server_time - instance().us_clock.now() - instance().time_offset;
+    }
+    else {
+        instance().most_recent_correction = std::chrono::milliseconds(clockOffsetMs);
+    }
 
-    instance().last_time_offset.offset = std::chrono::milliseconds(clockOffsetMs);
+    instance().time_offset += instance().most_recent_correction;
+
+#if DEVICE_RTC
+    // Write the current UNIX timestamp into the RTC as well.
+    // We need to do some casting in order to round to seconds, then convert to an RTC time point.
+    RealTimeClock::write(RealTimeClock::time_point(std::chrono::round<std::chrono::seconds>(instance().now().time_since_epoch())));
+#endif
 }
 
 int32_t NTPClient::udpSendto(NetworkContext_t *pNetworkContext, uint32_t serverAddr, uint16_t serverPort,
@@ -121,8 +156,20 @@ SntpStatus_t NTPClient::init(NetworkInterface *interface, std::chrono::milliseco
         time_servers[time_server_idx].port = SNTP_DEFAULT_SERVER_PORT;
     }
 
+    if (!USING_LP_TICKER) {
+        // Prevent deep sleep because the us ticker will turn off in deep sleep, so we will lose the time
+        sleep_manager_lock_deep_sleep();
+    }
+
+#if DEVICE_RTC
     // Make sure RTC is initialized
     RealTimeClock::init();
+
+    // If we have RTC time, set our initial time from it.
+    // Example: if RTC is reading 10 seconds and us_clock is reading 1 second, then we want to set
+    // time_offset to +9 seconds so that now() will return 10 seconds
+    time_offset = RealTimeClock::now().time_since_epoch() - us_clock.now().time_since_epoch();
+#endif
 
     // Create socket. Binding to any random local port is OK.
     // Note that the coreSNTP docs say that a nonblocking socket is recommended, but if we use a nonblocking socket,
@@ -132,7 +179,11 @@ SntpStatus_t NTPClient::init(NetworkInterface *interface, std::chrono::milliseco
 
     // Init SNTP
     return Sntp_Init(&sntp_context, time_servers, num_ntp_servers, timeout.count(), ntp_packet_buffer, sizeof(ntp_packet_buffer),
-        &NTPClient::resolveDNS, &NTPClient::getRTCTime, &NTPClient::saveTimeOffset, &udp_interface, nullptr);
+        &NTPClient::resolveDNS, &NTPClient::getCurrentTime, &NTPClient::saveTimeOffset, &udp_interface, nullptr);
+}
+
+NTPClient::time_point NTPClient::now() const {
+    return us_clock.now() + time_offset;
 }
 
 SntpStatus_t NTPClient::requestTime() {
@@ -157,10 +208,12 @@ SntpStatus_t NTPClient::requestTime() {
 
 SntpStatus_t NTPClient::receiveTime(TimeOffset &result) {
 
+    // This will call saveTimeOffset() if a valid packet was received
     const auto ret = Sntp_ReceiveTimeResponse(&sntp_context, sntp_context.responseTimeoutMs);
+
     if(ret == SntpSuccess) {
         // Time offset was delivered through the callback
-        result = last_time_offset;
+        result = most_recent_correction;
     }
     return ret;
 }

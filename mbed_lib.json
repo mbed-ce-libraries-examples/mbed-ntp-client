@@ -1,0 +1,10 @@
+{
+  "name": "ntp-client",
+  "config": {
+    "prefer-lp-ticker": {
+      "help": "Prefer the lp ticker if available. The lp ticker is less precise but using it does not require the NTP client to lock out deep sleep.",
+      "accepted_values": [true, false],
+      "value": true
+    }
+  }
+}
