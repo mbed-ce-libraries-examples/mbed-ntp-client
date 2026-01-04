@@ -150,8 +150,25 @@ public:
 
     /**
      * @return The current time, as a UNIX timestamp (microseconds since 1970).
+     *
+     * @warning This time is NOT monotonic and can jump backwards or forwards depending on NTP
+     *    synchronization status. Also note that this can be called before the class is initialized,
+     *    but may jump backward when \c init() is called.
      */
     time_point now() const;
+
+    /**
+     * @brief Manually set the offset between the internal high precision clock and NTP time.
+     *
+     * This replaces the offset that was previously obtained from NTP or the real-time clock.
+     *
+     * @warning This is not thread-safe if other threads may potentially be reading the NTP time
+     *    (the other threads might briefly see a garbage time value).
+     *    It is mainly intended for testing purposes.
+     */
+    void set_offset(const duration offset) {
+        time_offset = offset;
+    }
 
     /**
      * @brief Send a packet to the server requesting the time.
@@ -168,7 +185,7 @@ public:
     SntpStatus_t requestTime();
 
     /**
-     * @brief Receive the result of a previous time query to the NTP server.
+     * @brief Receive the result of a previous time query to the NTP server and update the time.
      *
      * You must previously have called \c requestTime() to initiate an NTP query.
      *
@@ -176,19 +193,21 @@ public:
      *     time request, but does rotate to the next time server in the list to use the next time \c requestTime()
      *     is called.
      *
-     * @param[out] result If successful, the time offset resulting from the synchronization is saved here.
+     * @param[out] offset If successful, the time offset that was compensated is saved here. For example,
+     *    if this is 1ms, it means our local time was 1ms behind the server's, so the clock was advanced
+     *    by 1ms.
      *
      * @return Error code or \c SntpSuccess
      * @retval SntpErrorResponseTimeout if no response was received from the NTP server within the configured timeout
      */
-    SntpStatus_t receiveTime(TimeOffset & result);
+    SntpStatus_t receiveTime(std::chrono::microseconds & offset);
 
     /**
      * @brief Attempt a blocking sync of the Mbed system time in the RTC.
      *
-     * @param[out] offset If successful, the time offset resulting from the synchronization is saved here.
-     *    Note that the Mbed RTC only stores whole seconds, so the sub-second portion of this offset will need
-     *    to be added to the RTC time if you want better than second-level accuracy.
+     * @param[out] offset If successful, the time offset that was compensated is saved here. For example,
+     *    if this is 1ms, it means our local time was 1ms behind the server's, so the clock was advanced
+     *    by 1ms.
      *
      * @return SntpSuccess on success, or error code on error
      * @retval SntpErrorResponseTimeout if no response was received from the NTP server within the configured timeout
@@ -197,17 +216,9 @@ public:
      *     is received from the server, this call does rotate to the next time server in the list to use next time.
      *     So, you may wish to call this function multiple times, especially if you have multiple time servers configured.
      */
-    SntpStatus_t syncSystemTime(TimeOffset & offset) {
+    SntpStatus_t syncSystemTime(std::chrono::microseconds & offset) {
         auto ret = requestTime();
         if (ret != SntpSuccess) { return ret; }
-
-        ret = receiveTime(offset);
-
-        if (ret != SntpSuccess) { return ret; }
-
-        // Offset the system time forward by the offset.
-        RealTimeClock::write(RealTimeClock::now() + offset.wholeSeconds());
-
-        return SntpSuccess;
+        return receiveTime(offset);
     }
 };

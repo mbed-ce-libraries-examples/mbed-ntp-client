@@ -68,7 +68,7 @@ void NTPClient::saveTimeOffset(const SntpServerInfo_t *pTimeServer, const SntpTi
     // Per the coreSNTP docs, if the client and server are more than 68 years apart,
     // clockOffsetMs is not valid. Check if that is the case and, if so, just set our clock
     // to the server time to get us in the right ballpark.
-    time_point server_time(std::chrono::seconds(pServerTime->seconds - SNTP_FRACTION_VALUE_PER_MICROSECOND) +
+    time_point server_time(std::chrono::seconds(pServerTime->seconds - SNTP_TIME_AT_UNIX_EPOCH_SECS) +
         std::chrono::microseconds(pServerTime->fractions / SNTP_FRACTION_VALUE_PER_MICROSECOND));
     if (std::chrono::abs(instance().now() - server_time) > MAX_DIFF_FOR_TIME_OFFSET) {
         // To "set" the time, subtract away the current value of time_offset and replace it with the
@@ -175,7 +175,7 @@ SntpStatus_t NTPClient::init(NetworkInterface *interface, std::chrono::milliseco
     // Note that the coreSNTP docs say that a nonblocking socket is recommended, but if we use a nonblocking socket,
     // then Sntp_ReceiveTimeResponse() will spinlock for the entire timeout, which is gross.
     socket.open(interface);
-    socket.set_timeout(timeout.count());
+    socket.set_timeout(timeout);
 
     // Init SNTP
     return Sntp_Init(&sntp_context, time_servers, num_ntp_servers, timeout.count(), ntp_packet_buffer, sizeof(ntp_packet_buffer),
@@ -206,7 +206,7 @@ SntpStatus_t NTPClient::requestTime() {
     return Sntp_SendTimeRequest(&sntp_context, randNumber, 0);
 }
 
-SntpStatus_t NTPClient::receiveTime(TimeOffset &result) {
+SntpStatus_t NTPClient::receiveTime(std::chrono::microseconds &result) {
 
     // This will call saveTimeOffset() if a valid packet was received
     const auto ret = Sntp_ReceiveTimeResponse(&sntp_context, sntp_context.responseTimeoutMs);
