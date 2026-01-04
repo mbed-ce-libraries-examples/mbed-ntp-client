@@ -1,4 +1,4 @@
-/* Copyright (c) 2019 ARM, Arm Limited and affiliates.
+/* Copyright (c) 2026 Jamie Smith
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#pragma once
 
 #include "mbed.h"
 
@@ -128,7 +130,7 @@ public:
      */
     static NTPClient & instance();
 
-    static constexpr char const * DEFAULT_NTP_SERVERS[] = {"2.pool.ntp.org"};
+    static constexpr char const * DEFAULT_NTP_SERVERS[] = {"2.pool.ntp.org", "3.pool.ntp.org"};
 
     static constexpr std::chrono::milliseconds DEFAULT_TIMEOUT = 1s;
 
@@ -193,30 +195,31 @@ public:
      *     time request, but does rotate to the next time server in the list to use the next time \c requestTime()
      *     is called.
      *
-     * @param[out] offset If successful, the time offset that was compensated is saved here. For example,
-     *    if this is 1ms, it means our local time was 1ms behind the server's, so the clock was advanced
-     *    by 1ms.
+     * @param[out] offset If successful and this is not nullptr, the time offset that was compensated is saved
+     *    here. For example, if this is 1ms, it means our local time was 1ms behind the server's, so the clock
+     *    was advanced by 1ms.
      *
      * @return Error code or \c SntpSuccess
      * @retval SntpErrorResponseTimeout if no response was received from the NTP server within the configured timeout
      */
-    SntpStatus_t receiveTime(std::chrono::microseconds & offset);
+    SntpStatus_t receiveTime(std::chrono::microseconds * offset = nullptr);
 
     /**
-     * @brief Attempt a blocking sync of the Mbed system time in the RTC.
+     * @brief Attempt a blocking sync of the NTP time.
      *
-     * @param[out] offset If successful, the time offset that was compensated is saved here. For example,
-     *    if this is 1ms, it means our local time was 1ms behind the server's, so the clock was advanced
-     *    by 1ms.
+     * @param[out] offset If successful and this is not nullptr, the time offset that was compensated is saved
+     *    here. For example, if this is 1ms, it means our local time was 1ms behind the server's, so the clock
+     *    was advanced by 1ms.
      *
      * @return SntpSuccess on success, or error code on error
      * @retval SntpErrorResponseTimeout if no response was received from the NTP server within the configured timeout
+     * @return SntpRejectedResponse if the NTP server actively rejected the sync request.
      *
      * @note Only one NTP request is sent by this function (no retries). However, if no response or an explicit rejection
      *     is received from the server, this call does rotate to the next time server in the list to use next time.
      *     So, you may wish to call this function multiple times, especially if you have multiple time servers configured.
      */
-    SntpStatus_t syncSystemTime(std::chrono::microseconds & offset) {
+    SntpStatus_t syncTime(std::chrono::microseconds * offset = nullptr) {
         auto ret = requestTime();
         if (ret != SntpSuccess) { return ret; }
         return receiveTime(offset);

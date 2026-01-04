@@ -1,4 +1,4 @@
-/* Copyright (c) 2019 ARM, Arm Limited and affiliates.
+/* Copyright (c) 2026 Jamie Smith
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -206,14 +206,14 @@ SntpStatus_t NTPClient::requestTime() {
     return Sntp_SendTimeRequest(&sntp_context, randNumber, 0);
 }
 
-SntpStatus_t NTPClient::receiveTime(std::chrono::microseconds &result) {
+SntpStatus_t NTPClient::receiveTime(std::chrono::microseconds * offset) {
 
     // This will call saveTimeOffset() if a valid packet was received
     const auto ret = Sntp_ReceiveTimeResponse(&sntp_context, sntp_context.responseTimeoutMs);
 
-    if(ret == SntpSuccess) {
+    if(ret == SntpSuccess && offset != nullptr) {
         // Time offset was delivered through the callback
-        result = most_recent_correction;
+        *offset = most_recent_correction;
     }
     return ret;
 }

@@ -2,35 +2,28 @@
 
 This library allows you to fetch time information from a NTP server.
 
-For an example application, please see https://github.com/ARMmbed/ntp-client-example.
+It has been completely rewritten by the Mbed CE project, and now has the following features:
 
-## Getting started
+- Better compliance with the (S)NTP standard thanks to using FreeRTOS coreSNTP under the hood
+- Support for multiple NTP servers with automatic failover
+- Sub-second time synchronization (thanks to using the Mbed us ticker as a high resolution clock)
+- Automatically manages the RTC for you to keep time across resets, if supported on your hardware
+- Can be used in two-part sync mode (first send, then receive later) so that it can be used in a non-blocking way from e.g. a background polling function
 
-If you don't have an existing Mbed OS project, go ahead and create one.
+## Basic API
 
-```sh
-mbed new ntp-project
-cd ntp-project
-```
+### `NTPClient::instance()`
 
-Now add the library to your project.
+Get the singleton instance of the NTP client. All other functions must be called on this instance.
 
-```sh
-mbed import https://github.com/ARMmbed/ntp-client
-```
+### `NTPClient::init(NetworkInterface *iface)` [init function]
 
-The library will now be available in your project. Please see the API documentation below for usage information.
+Init the NTP client. You need to provide a pointer to an [Mbed OS NetworkInterface](https://os.mbed.com/docs/mbed-os/v6.15/apis/network-socket.html). The interface does not need to be up when this is called, but should be up 
 
-## API
+### `NTPClient::time_point NTPClient::now()`
 
-### `NTPClient(NetworkInterface *iface)` [constructor]
+Get the current time from the NTP clock, as microseconds since 1970. This uses the [std::chrono::time_point](https://en.cppreference.com/w/cpp/chrono/time_point.html) class.
 
-Create an NTP client. You need to provide a pointer to an [Mbed OS NetworkInterface](https://os.mbed.com/docs/mbed-os/v5.13/apis/network-socket.html). The interface should be connected and ready before calling `get_timestamp`.
+### `SntpStatus_t NTPClient::syncTime()`
 
-### `time_t NTPClient::get_timestamp(int timeout)`
-
-Return time information, typed as a [`time_t`](http://www.cplusplus.com/reference/ctime/time_t/). You can pass in an optional timeout argument (defaults to 15000 milliseconds). For information on timeout values, please see the [Mbed OS Socket documentation](https://os.mbed.com/docs/mbed-os/v5.13/apis/socket.html).
-
-### `void set_server(char* server, int port)`
-
-Change the NTP server and port. The default server is `2.pool.ntp.org` and the default port is `123`.
+Synchronize the NTP time with the currently selected NTP server.
