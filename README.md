@@ -27,3 +27,6 @@ Get the current time from the NTP clock, as microseconds since 1970. This uses t
 ### `SntpStatus_t NTPClient::syncTime()`
 
 Synchronize the NTP time with the currently selected NTP server.
+
+## Example
+For an example of how to integrate the NTP client into an application, see the [ntp-cli example](https://github.com/mbed-ce-libraries-examples/mbed-ntp-cli-example).
