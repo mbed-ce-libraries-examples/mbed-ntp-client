@@ -41,7 +41,7 @@ us_clock(get_us_ticker_data())
 bool NTPClient::resolveDNS(const SntpServerInfo_t *pServerAddr, uint32_t *pIpV4Addr) {
     SocketAddress result;
 
-    if(instance().interface->gethostbyname(pServerAddr->pServerName, &result, NSAPI_IPv4) != NSAPI_ERROR_OK) {
+    if(instance().stack->gethostbyname(pServerAddr->pServerName, &result, NSAPI_IPv4) != NSAPI_ERROR_OK) {
         return false;
     }
 
@@ -140,14 +140,14 @@ NTPClient & NTPClient::instance() {
     return instance;
 }
 
-SntpStatus_t NTPClient::init(NetworkInterface *interface, std::chrono::milliseconds timeout, char const * const *ntp_servers, size_t num_ntp_servers) {
+SntpStatus_t NTPClient::init(NetworkStack *stack, std::chrono::milliseconds timeout, char const * const *ntp_servers, size_t num_ntp_servers) {
 
-    if(interface == nullptr || ntp_servers == nullptr || num_ntp_servers == 0) {
+    if(stack == nullptr || ntp_servers == nullptr || num_ntp_servers == 0) {
         return SntpErrorBadParameter;
     }
 
     // Save data into class vars
-    this->interface = interface;
+    this->stack = stack;
     delete[] time_servers; // Delete if already allocated
     time_servers = new SntpServerInfo_t[num_ntp_servers];
     for(size_t time_server_idx = 0; time_server_idx < num_ntp_servers; time_server_idx++) {
@@ -174,7 +174,7 @@ SntpStatus_t NTPClient::init(NetworkInterface *interface, std::chrono::milliseco
     // Create socket. Binding to any random local port is OK.
     // Note that the coreSNTP docs say that a nonblocking socket is recommended, but if we use a nonblocking socket,
     // then Sntp_ReceiveTimeResponse() will spinlock for the entire timeout, which is gross.
-    socket.open(interface);
+    socket.open(stack);
     socket.set_timeout(timeout);
 
     // Init SNTP

@@ -81,8 +81,8 @@ private:
     // Buffer for the library to build packets.
     uint8_t ntp_packet_buffer[SNTP_PACKET_BASE_SIZE];
 
-    // Network interface to use
-    NetworkInterface *interface;
+    // Network stack to use
+    NetworkStack *stack;
 
     // Socket
     UDPSocket socket;
@@ -137,7 +137,7 @@ public:
     /**
      * @brief Initialize Mbed NTP.
      *
-     * @param interface Network interface to communicate over
+     * @param stack Network stack to communicate over
      * @param timeout Timeout to wait for a response from the server in receiveTime(). May be 0 to operate in nonblocking mode.
      * @param ntp_servers Array of NTP server addresses, as C strings. Optional, defaults to DEFAULT_NTP_SERVERS.
      *     Strings must remain allocated as long as the class is used.
@@ -145,7 +145,7 @@ public:
      *
      * @return Error code or \c SntpSuccess
      */
-    SntpStatus_t init(NetworkInterface *interface,
+    SntpStatus_t init(NetworkStack *stack,
                       std::chrono::milliseconds timeout = DEFAULT_TIMEOUT,
                       char const * const * ntp_servers = DEFAULT_NTP_SERVERS,
                       size_t num_ntp_servers = sizeof(DEFAULT_NTP_SERVERS) / sizeof(char *));
